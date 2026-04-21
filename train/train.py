@@ -1,10 +1,11 @@
 import torch
 import numpy as np
-import os
 import logging
 import wandb
 import dataclasses
-from config import TrainConfig
+import sys
+import os
+
 from pathlib import Path
 from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -13,6 +14,10 @@ from typing import Any
 import einops
 import torch.nn.functional as F
 from transformers import AutoTokenizer
+
+
+# 获取当前文件的上一级目录（即 项目根目录）
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import utils.image_tools as image_tools
 
 
@@ -46,27 +51,6 @@ def init_logging():
     else:
         logger.handlers[0].setFormatter(formatter)
 
-def init_wandb(config: TrainConfig, *, resuming: bool, enabled: bool = True):
-    """Initialize wandb logging."""
-    if not enabled:
-        wandb.init(mode="disabled")
-        return
-
-    ckpt_dir = config.checkpoint_dir
-    if not ckpt_dir.exists():
-        raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
-
-    if resuming:
-        run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
-    else:
-        wandb.init(
-            name=config.exp_name,
-            config=dataclasses.asdict(config),
-            project=config.project_name,
-        )
-        (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
-
 
 def task_to_prompt(task: str) -> str:
     s = str(task).strip()
@@ -83,7 +67,7 @@ class RawPiDataset(Dataset):
     - task -> prompt
     不做 resize / tokenize / pad
     """
-
+    @staticmethod
     def parse_image(image: Any) -> np.ndarray:
         """
         输入可能是 torch.Tensor / np.ndarray
@@ -231,35 +215,11 @@ def process_pi0_batch(
 
     return out
 
-def make_pi0_collate_fn(
-    tokenizer: PaligemmaTokenizer,
-    *,
-    image_size: int = 224,
-    action_dim: int = 32,
-    prompt_key: str = "prompt",
-    fallback_task_key: str = "task",
-):
-    def collate_fn(samples: list[dict]) -> dict:
-        # 先用默认 collate 拼成 batch
-        batch = default_collate(samples)
 
-        # 再做 PI0 前处理
-        pi0_batch = process_pi0_batch(
-            batch,
-            tokenizer,
-            image_size=image_size,
-            action_dim=action_dim,
-            prompt_key=prompt_key,
-            fallback_task_key=fallback_task_key,
-        )
-        return pi0_batch
-
-    return collate_fn
-
-def train_loop(config):
+def train_loop():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     is_main = True
-    set_seed(config.seed)
+    # set_seed(config.seed)
 
     # tmp config -------------------------------------------------------------------------
     repo_id = "flow929/ledataset_libero_spatial"
@@ -274,9 +234,18 @@ def train_loop(config):
 
     # 2. tokenizer
     tokenizer = PaligemmaTokenizer(
-        tokenizer_model_path="/你的路径/paligemma_tokenizer.model",
+        tokenizer_path="/home/flow/code/mypi/models/paligemma_tokenizer",
         max_len=48,
     )
+
+    def pi0_collate_fn(samples: list[dict]) -> dict:
+        batch = default_collate(samples)
+        return process_pi0_batch(
+            batch,
+            tokenizer,
+            image_size=224,
+            action_dim=32
+        )
 
     # 3. dataloader
     loader = DataLoader(
@@ -284,27 +253,36 @@ def train_loop(config):
         batch_size=4,
         shuffle=True,
         num_workers=0,
-        collate_fn=make_pi0_collate_fn(
-            tokenizer,
-            image_size=224,
-            action_dim=32,
-            prompt_key="prompt",
-            fallback_task_key="task",
-        ),
+        collate_fn=pi0_collate_fn
     )
 
-    # 4. 直接拿最终 pi0 batch
+    # 4. DEBUG pi0 batch
+    def inspect_batch(batch, name="batch"):
+        print(f"\n===== {name} =====")
+        for k, v in batch.items():
+            if isinstance(v, dict):
+                print(f"{k}:")
+                for kk, vv in v.items():
+                    shape = tuple(vv.shape) if hasattr(vv, "shape") else type(vv)
+                    dtype = vv.dtype if hasattr(vv, "dtype") else type(vv)
+                    print(f"  {kk:<20} shape={shape}, dtype={dtype}")
+            else:
+                shape = tuple(v.shape) if hasattr(v, "shape") else type(v)
+                dtype = v.dtype if hasattr(v, "dtype") else type(v)
+                print(f"{k:<24} shape={shape}, dtype={dtype}")
+
+
     pi0_batch = next(iter(loader))
-
-
+    inspect_batch(pi0_batch, "pi0_batch from loader")
+    # 不需要再手动调用 process_pi0_batch
 
 
 def main():
-    init_logging()
+    # init_logging()
 
 
 
-    train_loop(config)
+    train_loop()
 
 
 
