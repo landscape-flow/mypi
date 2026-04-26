@@ -274,7 +274,6 @@ def train_loop():
 
     pi0_batch = next(iter(loader))
     inspect_batch(pi0_batch, "pi0_batch from loader")
-    # 不需要再手动调用 process_pi0_batch
 
 
 def main():
