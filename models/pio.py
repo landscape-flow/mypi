@@ -5,10 +5,15 @@ import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
-import preprocessing_pytorch as _preprocessing
+import sys, os
+
+# 获取当前文件的上一级目录（即 项目根目录）
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import models.preprocessing_pytorch as _preprocessing
+
 from typing import Literal, TypeAlias
 import dataclasses
-from gemma import PaliGemmaWithExpertModel
+from models.gemma import PaliGemmaWithExpertModel
 
 
 Variant = Literal["dummy", "gemma_300m",  "gemma_2b"]
@@ -21,7 +26,7 @@ class Config:
     num_heads: int
     num_kv_heads: int
     head_dim: int
-    lora_configs: bool
+    # lora_configs: bool
 
 
 gemma_config_dict = {
@@ -137,7 +142,6 @@ class PI0Pytorch(nn.Module):
         self.paligemma_with_expert = PaliGemmaWithExpertModel(
             paligemma_config,
             action_expert_config,
-            use_adarms=[False, True] if self.pi05 else [False, False],
             precision="float32",
         )
 
