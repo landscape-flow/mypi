@@ -8,7 +8,7 @@ import os
 
 from pathlib import Path
 from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from torch.utils.data import Dataset, DataLoader, default_collate
 from typing import Any
 import einops
@@ -278,6 +278,19 @@ def to_device(obj, device):
     return obj
 
 
+
+def create_torch_dataset(repo_id, action_horizon: int) -> Dataset:
+
+    dataset_meta = LeRobotDatasetMetadata(repo_id)
+    dataset = LeRobotDataset(
+        repo_id,
+        delta_timestamps={
+            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in ("actions",)
+        },
+    )
+
+    return dataset
+
 def train_loop():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     is_main = True
@@ -289,7 +302,7 @@ def train_loop():
 
 
     # -------------------------------------------------------------------------
-    ds = LeRobotDataset(repo_id)
+    ds = create_torch_dataset(repo_id, action_horizon= 50)
 
     # 1. base dataset: 你已有的 ds
     raw_ds = RawPiDataset(ds)
