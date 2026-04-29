@@ -216,6 +216,67 @@ def process_pi0_batch(
 
     return out
 
+class SimpleObservation:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+def normalize_image(img):
+    img = img.float()
+    if img.max() > 1.5:   # 说明是 uint8 / 0~255
+        img = img / 255.0 
+    return (img- 0.5)*2.0   # 归一化到 [-1, 1]
+    
+def pi0_collate_fn(samples):
+    batch = default_collate(samples)
+
+    tokenizer = PaligemmaTokenizer(
+        tokenizer_path="/home/flow/code/mypi/models/paligemma_tokenizer",
+        max_len=48,
+    )
+
+
+    batch = process_pi0_batch(
+        batch,
+        tokenizer,
+        image_size=224,
+        action_dim=32
+    )
+    # ===== 关键：统一 image 归一化 =====
+    for k, v in batch["image"].items():
+        batch["image"][k] = normalize_image(v)
+
+    observation = SimpleObservation(
+        images=batch["image"],                     # 保持 dict！
+        image_masks=batch["image_mask"],           # 保持 dict！
+        tokenized_prompt=batch["tokenized_prompt"],
+        tokenized_prompt_mask=batch["tokenized_prompt_mask"],
+        state=batch["state"],
+    )
+
+    actions = batch["actions"]
+
+    return observation, actions
+
+
+def to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+
+    if isinstance(obj, dict):
+        return {k: to_device(v, device) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(to_device(v, device) for v in obj)
+
+    # 🔥 关键补丁
+    if hasattr(obj, "__dict__"):
+        for k, v in obj.__dict__.items():
+            setattr(obj, k, to_device(v, device))
+        return obj
+
+    return obj
+
 
 def train_loop():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -234,41 +295,12 @@ def train_loop():
     raw_ds = RawPiDataset(ds)
 
     # 2. tokenizer
-    tokenizer = PaligemmaTokenizer(
-        tokenizer_path="/home/flow/code/mypi/models/paligemma_tokenizer",
-        max_len=48,
-    )
 
-    def pi0_collate_fn(samples):
-        batch = default_collate(samples)
-
-        batch = process_pi0_batch(
-            batch,
-            tokenizer,
-            image_size=224,
-            action_dim=32
-        )
-
-        # ===== 转成 PI0 期望格式 =====
-        images = list(batch["image"].values())             # list of [B,H,W,3]
-        image_masks = list(batch["image_mask"].values())   # list of bool
-
-        observation = (
-            images,
-            image_masks,
-            batch["tokenized_prompt"],
-            batch["tokenized_prompt_mask"],
-            batch["state"],
-        )
-
-        actions = batch["actions"]
-
-        return observation, actions
 
     # 3. dataloader
     loader = DataLoader(
         raw_ds,
-        batch_size=4,
+        batch_size=2,
         shuffle=True,
         num_workers=0,
         collate_fn=pi0_collate_fn
@@ -278,22 +310,7 @@ def train_loop():
     model = PI0Pytorch().to(device)
     model.train()
 
-    # 4. DEBUG pi0 batch
-    def inspect_batch(batch, name="batch"):
-        print(f"\n===== {name} =====")
-        for k, v in batch.items():
-            if isinstance(v, dict):
-                print(f"{k}:")
-                for kk, vv in v.items():
-                    shape = tuple(vv.shape) if hasattr(vv, "shape") else type(vv)
-                    dtype = vv.dtype if hasattr(vv, "dtype") else type(vv)
-                    print(f"  {kk:<20} shape={shape}, dtype={dtype}")
-            else:
-                shape = tuple(v.shape) if hasattr(v, "shape") else type(v)
-                dtype = v.dtype if hasattr(v, "dtype") else type(v)
-                print(f"{k:<24} shape={shape}, dtype={dtype}")
-    pi0_batch = next(iter(loader))
-    inspect_batch(pi0_batch, "pi0_batch from loader")
+
 
     # 5. optimizer（对齐原 AdamW）----------
     peak_lr = 2.5e-5            # CosineDecaySchedule.peak_lr
@@ -331,21 +348,32 @@ def train_loop():
     start_time = time.time()
     infos = []      # 存储最近 log_interval 步的统计
 
-    pbar = tqdm(total=num_train_steps, desc="Training", initial=0) if is_main else None
+    pbar = tqdm.tqdm(total=num_train_steps, desc="Training", initial=0) if is_main else None
     #
-    def to_device(batch, device):
-        if isinstance(batch, dict):
-            return {k: to_device(v, device) for k, v in batch.items()}
-        elif isinstance(batch, (list, tuple)):
-            return type(batch)(to_device(x, device) for x in batch)
-        elif isinstance(batch, torch.Tensor):
-            return batch.to(device)
-        else:
-            return batch
-        
+
     # ---------- 训练循环 ----------
     while global_step < num_train_steps:
         for observation, actions in loader:
+            #debug--------------------------------------------------------------
+            # print(type(observation))
+            # print(observation)
+
+            # base_img = observation.images["base_0_rgb"]
+            # print(base_img.shape)
+            # print(base_img.dtype)
+            # print(base_img.min().item(), base_img.max().item())
+
+            # import matplotlib.pyplot as plt
+
+            # img = observation.images["base_0_rgb"][0]
+
+            # img = img.permute(1,2,0) if img.shape[0] == 3 else img
+
+            # plt.imshow(img.cpu().numpy())
+            # plt.show()
+
+            #------------------------------------------------------------------------
+
             if global_step >= num_train_steps:
                 break
             
@@ -353,12 +381,16 @@ def train_loop():
             observation = to_device(observation, device)
             actions = actions.to(torch.float32)  # noqa: PLW2901
             actions = actions.to(device)  # noqa: PLW2901
+            print(type(observation))
+            print(type(observation.images))
+            print(observation.images["base_0_rgb"].device)
 
             # ===== 3. LR 更新 =====
             lr = lr_schedule(global_step)
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
             # Forward pass
+            #print(observation.device)
             losses = model(observation, actions)
 
             if isinstance(losses, (list, tuple)):

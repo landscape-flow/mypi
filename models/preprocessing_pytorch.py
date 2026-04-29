@@ -142,9 +142,9 @@ def preprocess_observation_pytorch(
             image = image * 2.0 - 1.0
 
         # Convert back to [B, C, H, W] format if it was originally channels-first
-        if is_channels_first:
+        if not is_channels_first:
             image = image.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
-
+            print(f"Processed image {key} with shape {image.shape} and dtype {image.dtype}")
         out_images[key] = image
 
     # obtain mask
@@ -168,6 +168,4 @@ def preprocess_observation_pytorch(
         state=observation.state,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
-        token_ar_mask=observation.token_ar_mask,
-        token_loss_mask=observation.token_loss_mask,
     )
